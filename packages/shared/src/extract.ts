@@ -210,34 +210,46 @@ export async function extractFilledRects(
           ca * e + cc * f + ce, cb * e + cd * f + cf,
         ];
       } else if (op === OPS.constructPath) {
-        const subOps = args[0] as number[];
-        const subArgs = args[1] as number[];
-        let argIdx = 0;
-        for (const subOp of subOps) {
-          if (subOp === OPS.rectangle) {
-            const rx = subArgs[argIdx], ry = subArgs[argIdx + 1];
-            const rw = subArgs[argIdx + 2], rh = subArgs[argIdx + 3];
-            const absW = Math.abs(rw), absH = Math.abs(rh);
-            if (absW >= minSize && absW <= maxSize && absH >= minSize && absH <= maxSize) {
-              const tx = currentTransform[0] * rx + currentTransform[2] * ry + currentTransform[4];
-              const ty = currentTransform[1] * rx + currentTransform[3] * ry + currentTransform[5];
-              results.push({
-                x: Math.round(tx * 100) / 100,
-                y: Math.round((viewport.height - ty) * 100) / 100,
-                width: Math.round(absW * 100) / 100,
-                height: Math.round(absH * 100) / 100,
-                page: pageNum,
-              });
-            }
-            argIdx += 4;
-          } else if (subOp === OPS.moveTo || subOp === OPS.lineTo) {
-            argIdx += 2;
-          } else if (subOp === OPS.curveTo) {
-            argIdx += 6;
-          } else if (subOp === OPS.curveTo2 || subOp === OPS.curveTo3) {
-            argIdx += 4;
+        // pdfjs-dist v5: args = [paintOp, [Float32Array], bounds]
+        // Float32Array is interleaved [subOp, coords...] where:
+        //   0=moveTo(x,y), 1=lineTo(x,y), 2=curveTo(6 coords), 4=closePath
+        const pathData = args[1]?.[0];
+        if (!(pathData instanceof Float32Array)) continue;
+
+        // Collect all points to detect rectangle-like shapes
+        const points: [number, number][] = [];
+        let j = 0;
+        while (j < pathData.length) {
+          const subOp = pathData[j];
+          if (subOp === 0 || subOp === 1) { // moveTo / lineTo
+            points.push([pathData[j + 1], pathData[j + 2]]);
+            j += 3;
+          } else if (subOp === 2) { // curveTo
+            j += 7;
+          } else if (subOp === 4) { // closePath
+            j += 1;
+          } else {
+            j += 1;
           }
-          // closePath has no args
+        }
+
+        if (points.length >= 2) {
+          const xs = points.map(p => p[0]);
+          const ys = points.map(p => p[1]);
+          const rx = Math.min(...xs), ry = Math.min(...ys);
+          const rw = Math.max(...xs) - rx, rh = Math.max(...ys) - ry;
+          const absW = Math.abs(rw), absH = Math.abs(rh);
+          if (absW >= minSize && absW <= maxSize && absH >= minSize && absH <= maxSize) {
+            const tx = currentTransform[0] * rx + currentTransform[2] * ry + currentTransform[4];
+            const ty = currentTransform[1] * rx + currentTransform[3] * ry + currentTransform[5];
+            results.push({
+              x: Math.round(tx * 100) / 100,
+              y: Math.round((viewport.height - ty) * 100) / 100,
+              width: Math.round(absW * 100) / 100,
+              height: Math.round(absH * 100) / 100,
+              page: pageNum,
+            });
+          }
         }
       }
     }

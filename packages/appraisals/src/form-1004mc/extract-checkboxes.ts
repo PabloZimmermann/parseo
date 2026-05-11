@@ -84,22 +84,27 @@ export async function extractCheckedBoxes(
     }
 
     if (name === "constructPath") {
-      const [opcodes, pathArgs] = args;
-      let ai = 0;
-      const points: [number, number][] = [];
+      // pdfjs-dist v5: args = [paintOp, [Float32Array], bounds]
+      // Float32Array is interleaved [subOp, coords...] where:
+      //   0=moveTo(x,y), 1=lineTo(x,y), 2=curveTo(6 coords), 4=closePath
+      const pathData = args[1]?.[0];
+      if (!(pathData instanceof Float32Array)) continue;
 
-      for (const op of opcodes) {
-        if (op === 13 /* moveTo */ || op === 14 /* lineTo */) {
-          const px = pathArgs[ai++];
-          const py = pathArgs[ai++];
+      const points: [number, number][] = [];
+      let ai = 0;
+      while (ai < pathData.length) {
+        const op = pathData[ai];
+        if (op === 0 /* moveTo */ || op === 1 /* lineTo */) {
+          const px = pathData[ai + 1];
+          const py = pathData[ai + 2];
           points.push(applyM(ctm, px, py));
-        } else if (op === 19 /* rectangle */) {
-          const rx = pathArgs[ai++], ry = pathArgs[ai++];
-          const rw = pathArgs[ai++], rh = pathArgs[ai++];
-          points.push(applyM(ctm, rx, ry));
-          points.push(applyM(ctm, rx + rw, ry + rh));
-        } else if (op === 18 /* closePath */) {
-          // no args
+          ai += 3;
+        } else if (op === 2 /* curveTo */) {
+          ai += 7;
+        } else if (op === 4 /* closePath */) {
+          ai += 1;
+        } else {
+          ai += 1;
         }
       }
 
