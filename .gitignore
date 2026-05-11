@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.tsbuildinfo
+testing/
+discarded/
+.DS_Store
+.claude/

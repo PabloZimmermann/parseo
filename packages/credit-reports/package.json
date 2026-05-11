@@ -1,0 +1,24 @@
+{
+  "name": "@parseo/credit-reports",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": ["dist", "!dist/**/cli.*"],
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@parseo/shared": "1.0.0"
+  }
+}
