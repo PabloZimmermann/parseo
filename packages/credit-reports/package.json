@@ -1,6 +1,6 @@
 {
   "name": "@parseo/credit-reports",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -14,11 +14,14 @@
   "publishConfig": {
     "access": "public"
   },
-  "files": ["dist", "!dist/**/cli.*"],
+  "files": [
+    "dist",
+    "!dist/**/cli.*"
+  ],
   "scripts": {
     "build": "tsc"
   },
   "dependencies": {
-    "@parseo/shared": "1.0.0"
+    "@parseo/shared": "1.0.1"
   }
 }

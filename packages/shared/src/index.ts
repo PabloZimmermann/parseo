@@ -1,3 +1,4 @@
+export { resolvePathFromArgs } from "./cli.js";
 export { extractTextItems, extractLines, formLines, extractFilledRects } from "./extract.js";
 export type { FilledRect } from "./extract.js";
 export { classifyDocument } from "./classify.js";
@@ -5,7 +6,6 @@ export type { FormatName, ClassifyResult, PackageName } from "./classify.js";
 export type { TextItem, TextSegment, TextLine, DateString, DateRange } from "./types.js";
 export { toBBox } from "./types.js";
 export type { BoundingBox } from "./types.js";
-export { resolvePathFromArgs } from "./cli.js";
 export {
   ParserError,
   InvalidPDFError,
