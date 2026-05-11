@@ -1,17 +1,17 @@
-import { parseCreditReport } from "./router.js";
+import { parseCreditReportForTextract } from "./textract.js";
 import { readFileSync } from "fs";
 import { resolvePathFromArgs } from "@parseo/shared";
 
 async function main() {
   const args = process.argv.slice(2);
   if (args.length === 0) {
-    console.error("Usage: npx tsx credit-reports/cli.ts <pdf-path>");
+    console.error("Usage: npx tsx packages/credit-reports/src/cli.ts <pdf-path>");
     process.exit(1);
   }
 
   const pdfPath = resolvePathFromArgs(args);
   const buffer = readFileSync(pdfPath);
-  const result = await parseCreditReport(buffer);
+  const result = await parseCreditReportForTextract(buffer);
   console.log(JSON.stringify(result, null, 2));
 }
 
