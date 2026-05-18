@@ -33,6 +33,23 @@ Within-package imports stay relative (`./utils.js`, `../types.js`).
 2. Add `@parseo/shared` as a dependency if needed
 3. Add a reference in root `tsconfig.json`
 
+## Version bumping / publishing
+
+When bumping versions, **every** version reference in the monorepo must be updated. The full checklist:
+
+1. **Root `package.json`** — `"version"` field
+2. **Each `packages/*/package.json`** — `"version"` field
+3. **`packages/core/package.json` dependencies** — `@parseo/*` dependency ranges must be compatible with the new version (use `^` caret ranges, not exact pins)
+4. **Any other cross-package `@parseo/*` dependency** in any `packages/*/package.json`
+
+Workspace resolution masks version mismatches locally — npm workspaces always resolve to the local copy regardless of the version string. A pinned or outdated dependency version will only break for external consumers installing from npm. Always verify that `packages/core/package.json` dependency ranges cover the version being published.
+
+Publish flow:
+```bash
+npm run build
+npm publish --workspaces
+```
+
 ## CLI files
 
 `**/cli.ts` files are dev-only tools (run with `tsx`). They're included in the build but not intended for consumers.

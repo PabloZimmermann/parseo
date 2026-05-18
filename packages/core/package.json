@@ -1,6 +1,6 @@
 {
   "name": "@parseo/core",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -28,10 +28,10 @@
     "build": "tsc"
   },
   "dependencies": {
-    "@parseo/shared": "1.0.3",
-    "@parseo/credit-reports": "1.0.3",
-    "@parseo/background-checks": "1.0.3",
-    "@parseo/appraisals": "1.0.3",
-    "@parseo/bank-statements": "1.0.3"
+    "@parseo/shared": "^1.0.3",
+    "@parseo/credit-reports": "^1.0.3",
+    "@parseo/background-checks": "^1.0.3",
+    "@parseo/appraisals": "^1.0.3",
+    "@parseo/bank-statements": "^1.0.3"
   }
 }
