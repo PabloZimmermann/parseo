@@ -1,6 +1,6 @@
 {
   "name": "@parseo/bank-statements",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -30,6 +30,6 @@
     "build": "tsc"
   },
   "dependencies": {
-    "@parseo/shared": "1.0.3"
+    "@parseo/shared": "^1.0.6"
   }
 }

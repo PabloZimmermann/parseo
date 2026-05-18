@@ -35,17 +35,26 @@ Within-package imports stay relative (`./utils.js`, `../types.js`).
 
 ## Version bumping / publishing
 
-When bumping versions, **every** version reference in the monorepo must be updated. The full checklist:
+**CRITICAL:** When bumping versions, you MUST update **every** version reference in the monorepo. Workspace resolution masks version mismatches locally — npm workspaces always resolve to the local copy regardless of the version string. Exact-pinned or stale dependency versions only break for external consumers installing from npm, causing duplicate nested `node_modules` copies.
+
+### Full checklist (every item is mandatory)
 
 1. **Root `package.json`** — `"version"` field
-2. **Each `packages/*/package.json`** — `"version"` field
-3. **`packages/core/package.json` dependencies** — `@parseo/*` dependency ranges must be compatible with the new version (use `^` caret ranges, not exact pins)
-4. **Any other cross-package `@parseo/*` dependency** in any `packages/*/package.json`
+2. **Every `packages/*/package.json`** — `"version"` field
+3. **Every `@parseo/*` dependency in every `packages/*/package.json`** — must use `^` caret ranges matching the current version (e.g. if bumping to `1.0.6`, set `"^1.0.6"`), never exact pins and never stale ranges. This includes:
+   - `packages/core/package.json` — depends on all other `@parseo/*` packages
+   - `packages/appraisals/package.json` — depends on `@parseo/shared`
+   - `packages/background-checks/package.json` — depends on `@parseo/shared`
+   - `packages/bank-statements/package.json` — depends on `@parseo/shared`
+   - `packages/credit-reports/package.json` — depends on `@parseo/shared`
 
-Workspace resolution masks version mismatches locally — npm workspaces always resolve to the local copy regardless of the version string. A pinned or outdated dependency version will only break for external consumers installing from npm. Always verify that `packages/core/package.json` dependency ranges cover the version being published.
+### Verification step
 
-Publish flow:
+After updating, run: `grep -r '"@parseo/' packages/*/package.json` and confirm **no exact pins** remain (every `@parseo/*` dep must start with `^`).
+
+### Publish flow
 ```bash
+npm version patch --workspaces --include-workspace-root
 npm run build
 npm publish --workspaces
 ```
