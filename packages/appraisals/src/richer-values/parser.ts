@@ -156,13 +156,28 @@ function parsePreparedFor(page1Lines: TextLine[]): { name: string; address: stri
   return { name, address };
 }
 
-// ── Valuation Summary and Parameters (Pages 2-4) ────────────────────────────
+// ── Valuation Summary and Parameters (Pages 2-N) ────────────────────────────
+
+function findValuationPageNumber(lines: TextLine[]): number {
+  const marker = lines.find((l) =>
+    l.segments.some((s) => s.text.includes("Estimated As Is Market Value"))
+  );
+  if (marker) return marker.page;
+
+  const summaryLine = lines.find((l) =>
+    /^Valuation Summary$/i.test(l.fullText.trim())
+  );
+  if (summaryLine) return summaryLine.page;
+
+  return 5;
+}
 
 function getBodyLines(lines: TextLine[]): TextLine[] {
+  const valPage = findValuationPageNumber(lines);
   return lines.filter(
     (l) =>
       l.page >= 2 &&
-      l.page <= 4 &&
+      l.page < valPage &&
       !isHeaderOrFooter(l)
   );
 }
@@ -638,17 +653,18 @@ function parsePreparedBySection(body: TextLine[]): PreparedBy {
   return { name, email, phone, date, boundingBoxes: bb };
 }
 
-// ── Valuation Page (Page 5) ─────────────────────────────────────────────────
+// ── Valuation Page ─────────────────────────────────────────────────────────
 
 function parseValuationPage(lines: TextLine[]): ValuationPage {
-  const page5 = lines.filter(
-    (l) => l.page === 5 && !isHeaderOrFooter(l)
+  const valPage = findValuationPageNumber(lines);
+  const pageLines = lines.filter(
+    (l) => l.page === valPage && !isHeaderOrFooter(l)
   );
 
   return {
-    valuationResults: parseValuationResults(page5),
-    renovationStrategies: parseRenovationStrategies(page5),
-    marketDemand: parseMarketDemand(page5),
+    valuationResults: parseValuationResults(pageLines),
+    renovationStrategies: parseRenovationStrategies(pageLines),
+    marketDemand: parseMarketDemand(pageLines),
   };
 }
 

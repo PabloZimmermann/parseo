@@ -1,6 +1,6 @@
 {
   "name": "@parseo/background-checks",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -29,6 +29,6 @@
     "build": "tsc"
   },
   "dependencies": {
-    "@parseo/shared": "1.0.2"
+    "@parseo/shared": "1.0.3"
   }
 }
