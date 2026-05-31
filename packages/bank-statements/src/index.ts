@@ -12,6 +12,7 @@ import { parseTruistStatement, parseTruistFromLines } from "./truist/index.js";
 import { parsePNCStatement, parsePNCFromLines } from "./pnc/index.js";
 import { parseDiscoverStatement, parseDiscoverFromLines } from "./discover/index.js";
 import { parseSynovusStatement, parseSynovusFromLines } from "./synovus/index.js";
+import { parseSpaceCoastStatement, parseSpaceCoastFromLines } from "./space-coast/index.js";
 export const wellsFargo = parseWellsFargoStatement;
 export const tdBank = parseTDBankStatement;
 export const chase = parseChaseStatement;
@@ -26,6 +27,7 @@ export const truist = parseTruistStatement;
 export const pnc = parsePNCStatement;
 export const discover = parseDiscoverStatement;
 export const synovus = parseSynovusStatement;
+export const spaceCoast = parseSpaceCoastStatement;
 export {
   parseWellsFargoFromLines,
   parseTDBankFromLines,
@@ -41,6 +43,7 @@ export {
   parsePNCFromLines,
   parseDiscoverFromLines,
   parseSynovusFromLines,
+  parseSpaceCoastFromLines,
 };
 export type { WellsFargoStatement } from "./wells-fargo/index.js";
 export type { TDBankStatement } from "./td-bank/index.js";
@@ -56,3 +59,4 @@ export type { TruistStatement } from "./truist/index.js";
 export type { PNCStatement } from "./pnc/index.js";
 export type { DiscoverStatement } from "./discover/index.js";
 export type { SynovusStatement } from "./synovus/index.js";
+export type { SpaceCoastStatement } from "./space-coast/index.js";

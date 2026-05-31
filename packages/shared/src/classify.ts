@@ -21,7 +21,8 @@ export type FormatName =
   | "truist"
   | "pnc"
   | "discover"
-  | "synovus";
+  | "synovus"
+  | "space-coast";
 
 export interface ClassifyResult {
   /** Which parser family to use */
@@ -431,6 +432,28 @@ const profiles: FormatProfile[] = [
     exclude: [],
   },
 
+  // ── Space Coast Credit Union (Bank Statements) ────────────
+  {
+    name: "space-coast",
+    primary: [
+      /Space\s*Coast\s*Credit\s*Union/i,
+      /SCCU\.com/i,
+      /SCCU Routing Number/i,
+      /SCCU Members/i,
+    ],
+    supporting: [
+      /Member Statement/i,
+      /Statement Summary/i,
+      /Account Activity/i,
+      /Total Money In/i,
+      /Total Money Out/i,
+      /Watchdog/i,
+      /Melbourne,?\s*FL/i,
+      /263177903/,
+    ],
+    exclude: [],
+  },
+
   // ── SmartLinx (LexisNexis) ────────────────────────────────
   {
     name: "smartlinx",
@@ -482,6 +505,7 @@ const PACKAGE_FORMATS: Record<PackageName, FormatName[]> = {
     "pnc",
     "discover",
     "synovus",
+    "space-coast",
   ],
 };
 
