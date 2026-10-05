@@ -714,11 +714,17 @@ function parseRenovationStrategies(body: TextLine[]): RenovationStrategies {
   );
   if (headerLine?.segments[0]) bb.header = toBBox(headerLine.segments[0], headerLine);
 
-  // Determine value column boundaries from the header (Min, Partial, Full, Best).
-  const minSeg = headerLine?.segments.find((s) => s.text.trim() === "Min");
-  const bestSeg = headerLine?.segments.find((s) => s.text.trim() === "Best");
+  // Determine value column boundaries from the header. The fourth column is
+  // "Best" in most reports but "Value Add 1" (and sometimes more) in others,
+  // so take every header cell from "Min" onwards as a column.
+  const headerSegs = headerLine ? headerLine.segments.map((s) => ({ ...s, text: s.text.trim() })).filter((s) => s.text) : [];
+  const minIdx = headerSegs.findIndex((s) => s.text === "Min");
+  const columnSegs = minIdx >= 0 ? headerSegs.slice(minIdx) : [];
+  const columnLabels = columnSegs.map((s) => s.text);
+  const minSeg = columnSegs[0];
+  const lastSeg = columnSegs[columnSegs.length - 1];
   const valXMin = minSeg ? minSeg.x - 15 : 75;
-  const valXMax = bestSeg ? bestSeg.x + bestSeg.width + 15 : 290;
+  const valXMax = lastSeg ? lastSeg.x + lastSeg.width + 15 : 290;
 
   // Extract value segments: within the strategy column range only
   const getValSegs = (line: TextLine) =>
@@ -827,6 +833,9 @@ function parseRenovationStrategies(body: TextLine[]): RenovationStrategies {
 
   const buildStrategy = (i: number): RenovationStrategy => {
     const stratBb: Record<string, BoundingBox> = {};
+    if (i < 0) {
+      return { arv: null, asIsValue: null, rehab: null, perSqft: null, basis: null, netLift: null, grossReturn: "", rehabTime: null, estimatedTTS: null, cushion: null, totalTime: null, annualizedReturn: "", boundingBoxes: stratBb };
+    }
 
     // Copy relevant bounding boxes for this strategy column
     const prefix = ["min", "partial", "full", "best"][i];
@@ -853,11 +862,16 @@ function parseRenovationStrategies(body: TextLine[]): RenovationStrategies {
     };
   };
 
+  const bestIdx = columnLabels.findIndex((l) => /^Best$/i.test(l));
+  const valueAddIdx = columnLabels.findIndex((l) => /^Value Add/i.test(l));
   return {
+    columnLabels,
     min: buildStrategy(0),
     partial: buildStrategy(1),
     full: buildStrategy(2),
-    best: buildStrategy(3),
+    // Older reports label the fourth column "Best"; keep that index when no label is known.
+    best: buildStrategy(bestIdx >= 0 ? bestIdx : columnLabels.length === 0 ? 3 : -1),
+    valueAdd: valueAddIdx >= 0 ? buildStrategy(valueAddIdx) : null,
     boundingBoxes: bb,
   };
 }
@@ -951,146 +965,197 @@ function parseComparablesSection(lines: TextLine[], sectionTitle: string): Compa
     tableLines.push(line);
   }
 
-  // Parse comp rows
-  let currentGroup = "";
-  const comparables: Comparable[] = [];
+  // Column headers reveal the layout: multi-unit reports add a "Unt" column
+  // between Lot and Dist; some markets print Above/Below/Total square footage
+  // instead of a single Sqft column.
+  const headerLines = tableLines.filter((l) => l.segments[0]?.text.trim() === "#");
+  const hasUnits = headerLines.some((l) => /\bUnt\b/.test(l.fullText));
+  const hasAboveBelow = headerLines.some((l) => /\bAbove\b.*\bBelow\b.*\bTotal\b/.test(l.fullText));
 
+  // Condition group of each row comes from the "#  <group>" header above it.
+  const groupAt = new Map<TextLine, string>();
+  let currentGroup = "";
   for (const line of tableLines) {
     const firstSeg = line.segments[0]?.text.trim();
-
-    // Condition group header: "#" + group name
     if (firstSeg === "#" && line.segments.length >= 2) {
       const groupName = line.segments[1]?.text.trim();
-      if (CONDITION_GROUPS.some((g) => groupName === g)) {
-        currentGroup = groupName;
-      }
+      if (CONDITION_GROUPS.some((g) => groupName === g)) currentGroup = groupName;
       continue;
     }
+    groupAt.set(line, currentGroup);
+  }
 
-    // Skip subject and non-data lines
-    if (firstSeg === "S" || firstSeg === "#") continue;
-    if (!/^\d+$/.test(firstSeg ?? "")) continue;
+  // A comp row starts with its number and carries a sale date; a wrapped
+  // address spills onto the lines just above/below it.
+  const isCompAnchor = (l: TextLine) => {
+    const first = l.segments[0];
+    if (!first || first.x >= 45 || !/^\d+(\s|$)/.test(first.text.trim())) return false;
+    return /\d{1,2}\/\d{1,2}\/\d{2,4}/.test(l.fullText);
+  };
+  const rowLines = tableLines.filter((l) => {
+    const first = l.segments[0]?.text.trim();
+    return first !== "#" && first !== "S";
+  });
+  const rows = clusterRows(rowLines, isCompAnchor);
 
-    const comp = parseCompRow(line, parseInt(firstSeg!, 10), currentGroup);
+  const comparables: Comparable[] = [];
+  for (const { anchor, segs } of rows) {
+    const num = parseInt(anchor.segments[0].text.trim(), 10);
+    const comp = parseCompRow(anchor, segs, num, groupAt.get(anchor) ?? "", { hasUnits, hasAboveBelow });
     if (comp) comparables.push(comp);
   }
 
   return { title: sectionTitle, comparables };
 }
 
-function parseCompRow(line: TextLine, num: number, group: string): Comparable | null {
-  const bb: Record<string, BoundingBox> = {};
+interface CompLayout {
+  hasUnits: boolean;
+  hasAboveBelow: boolean;
+}
 
-  // Address: segments with x < 155 (after the # segment)
-  const addrSegs = line.segments.filter((s) => s.x > 40 && s.x < 155);
-  const address = addrSegs.map((s) => s.text.trim()).join(" ");
-  if (addrSegs[0]) bb.address = toBBox(addrSegs[0], line);
+const COMP_DATE = /^\d{1,2}\/\d{1,2}\/\d{2,4}$/;
+const COMP_YEAR = /^(18|19|20)\d{2}$/;
+const PROPERTY_TYPE_CODE = /^(C|TH|SF|DP|TP|QP|MF|MU|FM|VL|CRE|UKM|MFR|UK)$/;
 
-  // Data: segments with x >= 150 — concatenate and parse
-  const dataSegs = line.segments.filter((s) => s.x >= 150);
-  const dataText = dataSegs.map((s) => s.text.trim()).join(" ");
+/**
+ * One comp row. Works on whitespace tokens in reading order because pdf text
+ * runs merge cells unpredictably (the number, address and first sqft column
+ * can share one run; a wrapped address spans three lines). Shape:
+ *   # address [Type] [Above Below] Total Bd Bth Year [Stories] Lot [Unt] Dist [Flags] [Grg] COE SP $/sqft [C] TTS [Score]
+ * The row is anchored on the Year column: the first 4-digit year (scanning
+ * back from the sale date) that is preceded by Bth, Bd and Total.
+ */
+function parseCompRow(line: TextLine, segs: Seg[], num: number, group: string, layout: CompLayout): Comparable | null {
+  const tokens: { text: string; seg: Seg }[] = [];
+  for (const seg of sortReading(segs)) for (const t of seg.text.split(/\s+/)) if (t) tokens.push({ text: t, seg });
+  // Drop the row number
+  if (tokens[0]?.text === String(num)) tokens.shift();
+  else if (tokens[0]) tokens[0] = { ...tokens[0], text: tokens[0].text.replace(new RegExp(`^${num}\\s*`), "") };
 
-  // Parse numeric data after address.
-  // Pattern: [Type] sqft bd bth year stories lot dist [flags] [grg] COE SP $/sqft C TTS [score]
-  // Type is optional (e.g., "C", "TH", "SF", "QP") — strip it if present
-  const stripped = dataText.replace(/^[A-Z]{1,3}\s+/, "");
-  const m = stripped.match(
-    /^([\d,]+)\s+(\d+)\s+([\d.]+)\s+(\d{4})\s+([\d.]+)\s+([\d.]+|unkn)\s+([\d.]+)\s+(.+)$/
-  );
-  if (!m) return null;
+  const texts = tokens.map((t) => t.text);
+  const dateIdx = texts.findIndex((t) => COMP_DATE.test(t));
+  if (dateIdx < 0) return null;
 
-  const sqft = parseInt(m[1].replace(/,/g, ""), 10);
-  const beds = parseInt(m[2], 10);
-  const baths = parseFloat(m[3]);
-  const yearBuilt = parseInt(m[4], 10);
-  const stories = parseFloat(m[5]);
-  const lot = m[6] === "unkn" ? null : parseFloat(m[6]);
-  const dist = parseFloat(m[7]);
-  const tail = m[8];
+  const isNum = (t: string | undefined) => t !== undefined && /^[\d,]+(\.\d+)?$/.test(t);
+  let yearIdx = -1;
+  for (let i = dateIdx - 1; i >= 3; i--) {
+    if (COMP_YEAR.test(texts[i]) && isNum(texts[i - 1]) && /^\d+$/.test(texts[i - 2] ?? "") && isNum(texts[i - 3])) {
+      yearIdx = i;
+      break;
+    }
+  }
+  if (yearIdx < 0) return null;
 
-  // Parse the tail: [flags] [grg] COE SP $/sqft C TTS [score]
-  const tailMatch = tail.match(
-    /^(\d+)?\s*(\d+)?\s*(\d{1,2}\/\d{1,2}\/\d{2,4})\s+\$([\d,]+)\s+\$(\d+)\s+([\d.]+)\s+(\d+)\s*([\d.]+)?$/
-  );
+  const sqftCols = layout.hasAboveBelow ? 3 : 1;
+  const totalIdx = yearIdx - 3;
+  const firstSqftIdx = totalIdx - (sqftCols - 1);
+  if (firstSqftIdx < 0) return null;
 
+  const toInt = (t: string | undefined) => (t !== undefined && /^[\d,]+$/.test(t) ? parseInt(t.replace(/,/g, ""), 10) : null);
+  const sqft = toInt(texts[totalIdx]);
+  const sqftAbove = layout.hasAboveBelow ? toInt(texts[totalIdx - 2]) : null;
+  const sqftBelow = layout.hasAboveBelow ? toInt(texts[totalIdx - 1]) : null;
+  const beds = parseInt(texts[yearIdx - 2], 10);
+  const baths = parseFloat(texts[yearIdx - 1]);
+  const yearBuilt = parseInt(texts[yearIdx], 10);
+
+  // Address: everything before the sqft columns, minus a trailing property-type code
+  const addrTokens = tokens.slice(0, firstSqftIdx);
+  let propertyType: string | null = null;
+  if (addrTokens.length > 1 && PROPERTY_TYPE_CODE.test(addrTokens[addrTokens.length - 1].text)) {
+    propertyType = addrTokens.pop()!.text;
+  }
+  const address = addrTokens.map((t) => t.text).join(" ").replace(/\s+/g, " ").trim();
+  if (!address) return null;
+
+  // Between Year and COE: [Stories] Lot [Unt] Dist [Flags] [Grg]
+  let mid = texts.slice(yearIdx + 1, dateIdx);
+  let stories: number | null = null;
+  // Stories prints as 1.00 / 1.50 / 2.00; condo reports omit the column, in
+  // which case the row has at most two decimals (Lot, Dist) before the ints.
+  const hasStories = mid.length >= 3 && (/^\d\.(00|50)$/.test(mid[0]) || mid.slice(0, 3).every((t) => t.includes(".")));
+  if (hasStories) {
+    stories = parseFloat(mid[0]);
+    mid = mid.slice(1);
+  }
+  const lotTok = mid[0];
+  const lot = lotTok === undefined || lotTok === "unkn" ? null : parseFloat(lotTok);
+  mid = mid.slice(1);
+  let units: number | null = null;
+  if (layout.hasUnits && /^\d+$/.test(mid[0] ?? "")) {
+    units = parseInt(mid[0], 10);
+    mid = mid.slice(1);
+  }
+  const distIdx = mid.findIndex((t) => t.includes("."));
+  const distTokIdx = distIdx >= 0 ? distIdx : mid.findIndex((t) => /^\d+$/.test(t));
+  const dist = distTokIdx >= 0 ? parseFloat(mid[distTokIdx]) : null;
+  const ints = mid.filter((t, i) => i !== distTokIdx && /^\d+$/.test(t));
   let flags: number | null = null;
   let garage: number | null = null;
-  let closeOfEscrow = "";
-  let salePrice: number | null = null;
-  let pricePerSqft: number | null = null;
+  if (ints.length >= 2) {
+    flags = parseInt(ints[0], 10);
+    garage = parseInt(ints[1], 10);
+  } else if (ints.length === 1) {
+    garage = parseInt(ints[0], 10);
+  }
+
+  const closeOfEscrow = texts[dateIdx];
+  const spTok = texts[dateIdx + 1] ?? "";
+  const psfTok = texts[dateIdx + 2] ?? "";
+  const salePrice = /^\$[\d,]+$/.test(spTok) ? parseInt(spTok.replace(/[$,]/g, ""), 10) : null;
+  const pricePerSqft = /^\$[\d,]+$/.test(psfTok) ? parseInt(psfTok.replace(/[$,]/g, ""), 10) : null;
+
+  // After $/sqft: one number = TTS; two = C, TTS; three = C, TTS, Score.
+  const rest = texts.slice(dateIdx + 3).filter((t) => /^[\d.]+$/.test(t));
   let condition: number | null = null;
   let timeToSale: number | null = null;
   let score: number | null = null;
-
-  if (tailMatch) {
-    const pre1 = tailMatch[1];
-    const pre2 = tailMatch[2];
-    if (pre2 !== undefined) {
-      flags = parseInt(pre1!, 10);
-      garage = parseInt(pre2, 10);
-    } else if (pre1 !== undefined) {
-      garage = parseInt(pre1, 10);
-    }
-    closeOfEscrow = tailMatch[3];
-    salePrice = parseInt(tailMatch[4].replace(/,/g, ""), 10);
-    pricePerSqft = parseInt(tailMatch[5], 10);
-    condition = parseFloat(tailMatch[6]);
-    timeToSale = parseInt(tailMatch[7], 10);
-    score = tailMatch[8] !== undefined ? parseFloat(tailMatch[8]) : null;
+  if (rest.length === 1) {
+    timeToSale = parseInt(rest[0], 10);
+  } else if (rest.length === 2) {
+    condition = parseFloat(rest[0]);
+    timeToSale = parseInt(rest[1], 10);
+  } else if (rest.length >= 3) {
+    condition = parseFloat(rest[0]);
+    timeToSale = parseInt(rest[1], 10);
+    score = parseFloat(rest[2]);
   }
 
-  // Attach bounding boxes — map each segment to a field by x-coordinate.
-  // Segments are often merged, so we use the x position to determine which
-  // field the segment primarily represents.
-  for (const seg of dataSegs) {
-    const t = seg.text.trim();
-    const x = seg.x;
-
-    if (x < 200 && !bb.sqft) {
-      // First data segment covers sqft, beds, baths, yearBuilt (often merged)
-      const box = toBBox(seg, line);
-      bb.sqft = box;
-      bb.beds = box;
-      bb.baths = box;
-      bb.yearBuilt = box;
-    } else if (x >= 250 && x < 295 && !bb.stories) {
-      bb.stories = toBBox(seg, line);
-    } else if (x >= 285 && x < 325 && !bb.lot) {
-      bb.lot = toBBox(seg, line);
-    } else if (x >= 325 && x < 380 && /^\d/.test(t) && !bb.distance) {
-      bb.distance = toBBox(seg, line);
-    } else if (/\d{1,2}\/\d{1,2}\/\d{2,4}/.test(t) && !bb.closeOfEscrow) {
-      bb.closeOfEscrow = toBBox(seg, line);
-    } else if (/^\$[\d,]+$/.test(t) && t.length > 5 && !bb.salePrice) {
-      bb.salePrice = toBBox(seg, line);
-    } else if (/^\$\d+$/.test(t) && !bb.pricePerSqft) {
-      bb.pricePerSqft = toBBox(seg, line);
-    } else if (x >= 495 && x < 545 && /^[\d.]+$/.test(t) && !bb.condition) {
-      bb.condition = toBBox(seg, line);
-    } else if (x >= 520 && x < 575 && /^\d+$/.test(t) && !bb.timeToSale) {
-      bb.timeToSale = toBBox(seg, line);
-    } else if (x >= 555 && /^[\d.]+$/.test(t) && !bb.score) {
-      bb.score = toBBox(seg, line);
-    }
-  }
-
-  // For merged segments (e.g., "10/3/25 $750,000"), try to pick up SP from merged text
-  if (!bb.salePrice) {
-    const spSeg = dataSegs.find((s) => /\$[\d,]{4,}/.test(s.text));
-    if (spSeg) bb.salePrice = toBBox(spSeg, line);
-  }
+  // Bounding boxes: the text run each value was read from.
+  const bb: Record<string, BoundingBox> = {};
+  const box = (idx: number) => (tokens[idx] ? toBBox(tokens[idx].seg, line) : undefined);
+  const set = (key: string, idx: number) => {
+    const b = box(idx);
+    if (b) bb[key] = b;
+  };
+  if (addrTokens[0]) bb.address = toBBox(addrTokens[0].seg, line);
+  set("sqft", totalIdx);
+  set("beds", yearIdx - 2);
+  set("baths", yearIdx - 1);
+  set("yearBuilt", yearIdx);
+  set("closeOfEscrow", dateIdx);
+  set("salePrice", dateIdx + 1);
+  set("pricePerSqft", dateIdx + 2);
+  const restStart = dateIdx + 3;
+  if (rest.length >= 2) set("condition", restStart);
+  set("timeToSale", restStart + (rest.length >= 2 ? 1 : 0));
+  if (rest.length >= 3) set("score", restStart + 2);
 
   return {
     number: num,
     address,
+    propertyType,
     conditionGroup: group,
     sqft,
+    sqftAbove,
+    sqftBelow,
     beds,
     baths,
     yearBuilt,
     stories,
     lot,
     distance: dist,
+    units,
     flags,
     garage,
     closeOfEscrow,

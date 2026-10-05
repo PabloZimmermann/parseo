@@ -142,10 +142,15 @@ export interface RenovationStrategy {
 }
 
 export interface RenovationStrategies {
+  /** Column headers as printed from "Min" onwards, e.g. ["Min","Partial","Full","Best"] or ["Min","Partial","Full","Value Add 1"]. */
+  columnLabels: string[];
   min: RenovationStrategy;
   partial: RenovationStrategy;
   full: RenovationStrategy;
+  /** The "Best" column; empty (all null) when the report prints a Value Add column instead. */
   best: RenovationStrategy;
+  /** The first "Value Add" column when present. */
+  valueAdd: RenovationStrategy | null;
   boundingBoxes: Record<string, BoundingBox>;
 }
 
@@ -170,14 +175,22 @@ export interface ValuationPage {
 export interface Comparable {
   number: number;
   address: string;
+  /** Property-type code printed after the address in some reports ("C", "TH", "DP"...). */
+  propertyType: string | null;
   conditionGroup: string; // e.g. "Full Remodel", "Partial Remodel", "Maintained"
+  /** Total square footage (the only sqft column in most reports). */
   sqft: number | null;
+  /** Above/below-grade split; only reports with Above/Below/Total columns. */
+  sqftAbove: number | null;
+  sqftBelow: number | null;
   beds: number | null;
   baths: number | null;
   yearBuilt: number | null;
   stories: number | null;
   lot: number | null;
   distance: number | null;
+  /** Unit count; only printed by multi-unit reports ("Unt" column). */
+  units: number | null;
   flags: number | null;
   garage: number | null;
   closeOfEscrow: string;
