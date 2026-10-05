@@ -1,5 +1,5 @@
 import { extractLines, UnrecognizedFormatError, toBBox } from "@parseo/shared";
-import type { TextLine, BoundingBox } from "@parseo/shared";
+import type { TextLine, TextSegment, BoundingBox } from "@parseo/shared";
 import type {
   RicherValuesReport,
   CoverPage,
@@ -20,6 +20,8 @@ import type {
   Comparable,
   BudgetFlags,
   BudgetFlagSection,
+  BudgetFlagEntry,
+  MissingLineItem,
   BudgetLineItems,
   BudgetCategory,
   BudgetLineItem,
@@ -1101,7 +1103,7 @@ function parseCompRow(line: TextLine, num: number, group: string): Comparable | 
   };
 }
 
-// ── Budget Flags (Page 18) ────────────────────────────────────────────────────
+// ── Shared helpers for the budget tables ─────────────────────────────────────
 
 const CONCERN_LEVELS = [
   "Significant Concerns",
@@ -1109,6 +1111,68 @@ const CONCERN_LEVELS = [
   "Moderate Concerns",
   "Cautionary Concerns",
 ];
+
+/** Badges RicherValues prints in Flag columns and before line item names. */
+const FLAG_BADGE = /^(VERY HIGH|VERY LOW|HIGH|LOW|MED|MEDIUM|MISSING)$/i;
+const LEADING_BADGE = /^(VERY HIGH|VERY LOW|HIGH|LOW|MED|MEDIUM)\s+(?=\S)/i;
+const MONEY_TOKEN = /^[+-]?\$[\d,]+(?:\.\d+)?$/;
+
+interface Seg extends TextSegment {
+  y: number;
+  page: number;
+}
+
+/** Table rows are 16pt apart; a wrapped cell prints its halves ~5-8pt above and below the row. */
+const WRAP_TOLERANCE = 9;
+
+function parseSignedCurrency(text: string): number | null {
+  const m = text.replace(/\s/g, "").match(/^([+-]?)\$([\d,]+(?:\.\d+)?)$/);
+  if (!m) return null;
+  const n = parseFloat(m[2].replace(/,/g, ""));
+  return m[1] === "-" ? -n : n;
+}
+
+function lineSegs(line: TextLine): Seg[] {
+  return line.segments
+    .map((s) => ({ ...s, text: s.text.trim(), y: line.y, page: line.page }))
+    .filter((s) => s.text);
+}
+
+/**
+ * Group table lines into logical rows. A line is an "anchor" when `isAnchor`
+ * says so (it carries money, a row number...); every other line is a wrapped
+ * cell fragment and is attached to the nearest anchor within WRAP_TOLERANCE.
+ * Unattached fragments are dropped.
+ */
+function clusterRows(lines: TextLine[], isAnchor: (l: TextLine) => boolean): { anchor: TextLine; segs: Seg[] }[] {
+  const rows = lines.filter(isAnchor).map((anchor) => ({ anchor, segs: lineSegs(anchor) }));
+  for (const line of lines) {
+    if (isAnchor(line)) continue;
+    let best: (typeof rows)[number] | null = null;
+    let bestDy = Infinity;
+    for (const row of rows) {
+      if (row.anchor.page !== line.page) continue;
+      const dy = Math.abs(row.anchor.y - line.y);
+      if (dy < bestDy) {
+        bestDy = dy;
+        best = row;
+      }
+    }
+    if (best && bestDy <= WRAP_TOLERANCE) best.segs.push(...lineSegs(line));
+  }
+  return rows;
+}
+
+/** Segments of one logical row in reading order: by column (x), then top to bottom within a column. */
+function sortReading(segs: Seg[], xTolerance = 14): Seg[] {
+  return [...segs].sort((a, b) => (Math.abs(a.x - b.x) <= xTolerance ? a.y - b.y : a.x - b.x));
+}
+
+function joinColumn(segs: Seg[]): string {
+  return sortReading(segs).map((s) => s.text).join(" ").replace(/\s+/g, " ").trim();
+}
+
+// ── Budget Flags (Page 18) ────────────────────────────────────────────────────
 
 function parseBudgetFlags(lines: TextLine[]): BudgetFlags {
   const headerIdx = lines.findIndex((l) => /^Budget Flags$/i.test(l.fullText.trim()));
@@ -1137,20 +1201,45 @@ function parseBudgetFlags(lines: TextLine[]): BudgetFlags {
 
     // Collect items until next concern level or "Missing Line Items"
     const items: string[] = [];
+    const sectionLines: TextLine[] = [];
     for (let j = levelIdx + 1; j < body.length; j++) {
       const text = body[j].fullText.trim();
       if (CONCERN_LEVELS.includes(text) || /^Missing Line Items$/i.test(text)) break;
       if (text && !/^No line items flagged\.?$/i.test(text) && !/^Specific Line Item/i.test(text)) {
         items.push(text);
         sectionBB[`item${items.length}`] = toBBox(body[j].segments[0], body[j]);
+        sectionLines.push(body[j]);
       }
     }
 
-    concerns.push({ level, items, boundingBoxes: sectionBB });
+    // A flagged row starts at the left margin (badge or item name) and carries
+    // its Budget amount; wrapped Item/Diff/Notes cells sit on neighbouring lines.
+    const startsAtMargin = (l: TextLine) => {
+      const first = l.segments.find((s) => s.text.trim());
+      return !!first && first.x < 70;
+    };
+    const startsWithBadge = (l: TextLine) => {
+      const first = l.segments.find((s) => s.text.trim())?.text.trim().split(/\s+/) ?? [];
+      return FLAG_BADGE.test(first[0] ?? "") || FLAG_BADGE.test(`${first[0]} ${first[1]}`);
+    };
+    // Prefer badge-led lines as anchors (a wrapped Diff cell can also start a
+    // line with money); fall back to any margin line with money.
+    const hasBadgeAnchors = sectionLines.some((l) => startsAtMargin(l) && startsWithBadge(l) && hasMoney(l));
+    const rows = clusterRows(sectionLines, (l) =>
+      startsAtMargin(l) && hasMoney(l) && (!hasBadgeAnchors || startsWithBadge(l)),
+    );
+    const entries: BudgetFlagEntry[] = [];
+    for (const row of rows) {
+      const entry = parseBudgetFlagRow(row.anchor, row.segs);
+      if (entry) entries.push(entry);
+    }
+
+    concerns.push({ level, items, entries, boundingBoxes: sectionBB });
   }
 
   // Missing Line Items
   let missingLineItems = "";
+  let missingItems: MissingLineItem[] = [];
   const missingIdx = body.findIndex((l) => /^Missing Line Items$/i.test(l.fullText.trim()));
   if (missingIdx >= 0) {
     const missingLine = body[missingIdx];
@@ -1165,41 +1254,242 @@ function parseBudgetFlags(lines: TextLine[]): BudgetFlags {
       }
     }
     missingLineItems = textLines.join(" ");
+    missingItems = parseMissingLineItems(body.slice(missingIdx + 1));
   }
 
-  return { concerns, missingLineItems, boundingBoxes: bb };
+  return { concerns, missingLineItems, missingItems, boundingBoxes: bb };
+}
+
+/**
+ * One logical row of a concern table: [badge] [item] [budget] [expected] [diff] [notes].
+ * Works on whitespace tokens because pdf text runs merge cells unpredictably
+ * ("LOW Countertops", "$1,500 -$500", "+$3,000 if this is just for framing").
+ */
+function parseBudgetFlagRow(line: TextLine, segs: Seg[]): BudgetFlagEntry | null {
+  const ordered = sortReading(segs);
+  if (/^Flag\s+Item\s+Budget/i.test(ordered.map((s) => s.text).join(" "))) return null;
+
+  const tokens: { text: string; seg: Seg; order: number }[] = [];
+  for (const seg of ordered) {
+    for (const t of seg.text.split(/\s+/)) if (t) tokens.push({ text: t, seg, order: 0 });
+  }
+  if (tokens.length === 0) return null;
+
+  const bb: Record<string, BoundingBox> = {};
+  let i = 0;
+  let flag: string | null = null;
+  const two = tokens.length > 1 ? `${tokens[0].text} ${tokens[1].text}` : "";
+  if (two && FLAG_BADGE.test(two)) {
+    flag = two.toUpperCase();
+    bb.flag = toBBox(tokens[0].seg, line);
+    i = 2;
+  } else if (FLAG_BADGE.test(tokens[0].text)) {
+    flag = tokens[0].text.toUpperCase();
+    bb.flag = toBBox(tokens[0].seg, line);
+    i = 1;
+  }
+
+  const isValueToken = (t: string) => parseSignedCurrency(t) !== null || /^N\/A$/i.test(t);
+
+  // Item name: tokens up to the first Budget value
+  const nameParts: string[] = [];
+  while (i < tokens.length && !isValueToken(tokens[i].text)) {
+    nameParts.push(tokens[i].text);
+    if (!bb.item) bb.item = toBBox(tokens[i].seg, line);
+    i++;
+  }
+
+  // Budget, Expected, Diff: each a currency or N/A; everything after is Notes
+  const values: (number | null)[] = [];
+  const slots = ["budget", "expected", "diff"];
+  while (i < tokens.length && values.length < 3 && isValueToken(tokens[i].text)) {
+    values.push(parseSignedCurrency(tokens[i].text));
+    bb[slots[values.length - 1]] = toBBox(tokens[i].seg, line);
+    i++;
+  }
+  // Notes are free text: read them top-to-bottom, left-to-right, not by column.
+  const notesTokens = [...tokens.slice(i)].sort((a, b) => (Math.abs(a.seg.y - b.seg.y) > 3 ? a.seg.y - b.seg.y : a.seg.x - b.seg.x));
+  const notes = notesTokens.map((t) => t.text).join(" ").replace(/^-\s*/, "").replace(/\s+-\s*$/, "").trim();
+
+  const item = nameParts.join(" ").trim();
+  if (!item || values.length === 0) return null;
+
+  const budget = values[0] ?? null;
+  const expected = values[1] ?? null;
+  // Diff is Budget − Expected. Recompute it when both are known: the printed
+  // sign is sometimes lost when the cell wraps onto its own line.
+  const diff = budget !== null && expected !== null ? budget - expected : values[2] ?? null;
+  return {
+    flag,
+    item,
+    budget,
+    expected,
+    diff,
+    notes,
+    boundingBoxes: bb,
+  };
+}
+
+/**
+ * "Missing Line Items" table. Rows start at the left margin; a wrapped
+ * Comments cell spills onto neighbouring lines at the Comments column (x≥290),
+ * sometimes ABOVE the row because the cell is vertically centred, so comment
+ * fragments are attached to the nearest row by y.
+ */
+function parseMissingLineItems(body: TextLine[]): MissingLineItem[] {
+  const HEADER = /^(Expected Costs|Missing Item|Low|High|Expected|SQFT|Flags|Comments|\$ \/)/i;
+  type Row = { line: TextLine; item: MissingLineItem };
+  const rows: Row[] = [];
+  const fragments: { y: number; text: string }[] = [];
+
+  for (const line of body) {
+    const segs = lineSegs(line);
+    if (segs.length === 0) continue;
+    const first = segs[0];
+    const text = segs.map((s) => s.text).join(" ");
+
+    if (first.x < 60) {
+      if (/^Total\b/i.test(first.text)) break;
+      if (HEADER.test(first.text) || /^No items/i.test(first.text)) continue;
+      // A real row always carries at least one dollar amount
+      if (!/\$\d/.test(text)) continue;
+
+      // Item name = everything before the first currency value
+      const firstMoneyIdx = text.search(/[+-]?\$[\d,]+(?:\.\d+)?/);
+      const item = (firstMoneyIdx >= 0 ? text.slice(0, firstMoneyIdx) : text).trim();
+      const rest = firstMoneyIdx >= 0 ? text.slice(firstMoneyIdx) : "";
+      const money = Array.from(rest.matchAll(/[+-]?\$[\d,]+(?:\.\d+)?/g), (m) => parseSignedCurrency(m[0]));
+      const badgeMatch = rest.match(/\b(MISSING|HIGH|LOW|VERY HIGH|VERY LOW)\b/);
+      const comments = badgeMatch ? rest.slice(badgeMatch.index! + badgeMatch[0].length).trim() : "";
+
+      const bb: Record<string, BoundingBox> = { item: toBBox(first, line) };
+      rows.push({
+        line,
+        item: {
+          item,
+          low: money[0] ?? null,
+          high: money[1] ?? null,
+          expected: money[2] ?? null,
+          perSqft: money[3] ?? null,
+          flag: badgeMatch ? badgeMatch[1].toUpperCase() : null,
+          comments,
+          boundingBoxes: bb,
+        },
+      });
+    } else if (first.x >= 290 && !/\$/.test(text) && !HEADER.test(first.text)) {
+      fragments.push({ y: line.y, text });
+    }
+  }
+
+  // Attach wrapped comment fragments to the closest row.
+  for (const frag of fragments) {
+    let best: Row | null = null;
+    let bestDy = Infinity;
+    for (const row of rows) {
+      const dy = Math.abs(row.line.y - frag.y);
+      if (dy < bestDy) {
+        bestDy = dy;
+        best = row;
+      }
+    }
+    if (!best || bestDy > 14) continue;
+    best.item.comments = frag.y < best.line.y
+      ? `${frag.text} ${best.item.comments}`.trim()
+      : `${best.item.comments} ${frag.text}`.trim();
+  }
+
+  return rows.map((r) => r.item);
 }
 
 // ── Budget Line Items (Page 19) ───────────────────────────────────────────────
 
-function parseDollarValues(segments: { text: string; x: number; width: number; height: number }[]): number[] {
-  const values: number[] = [];
-  // Only look at segments in the dollar columns (x >= 370)
-  for (const seg of segments) {
-    if (seg.x < 370) continue;
-    const matches = seg.text.match(/\$[\d,]+/g);
-    if (matches) {
-      for (const m of matches) {
-        values.push(parseInt(m.replace(/[$,]/g, ""), 10));
-      }
+/**
+ * Column boundaries, derived from the table's own header row because the
+ * layout drifted over the years. Header text is centred in its column while
+ * cell text is left-aligned, so the boundary between two columns is the
+ * midpoint of their header positions.
+ */
+interface LineItemColumns {
+  descStart: number;
+  catStart: number;
+  moneyStart: number;
+}
+
+const DEFAULT_COLUMNS: LineItemColumns = { descStart: 168, catStart: 274, moneyStart: 347 };
+
+function detectLineItemColumns(headerLine: TextLine | undefined): LineItemColumns {
+  if (!headerLine) return DEFAULT_COLUMNS;
+  const segs = lineSegs(headerLine);
+  const find = (re: RegExp) => segs.find((s) => re.test(s.text));
+  const items = find(/^Budget Items/i);
+  const desc = find(/^Description/i);
+  const cat = find(/^Categories/i);
+  const money = find(/^HR\b/i) ?? segs.find((s) => /\bHR\b/.test(s.text) && s !== cat && s !== desc);
+  if (!items || !desc || !cat || !money) return DEFAULT_COLUMNS;
+  // Single merged header segment ("Budget Items Description Categories HR …") carries no column positions.
+  if (items === desc || desc === cat || cat === money) return DEFAULT_COLUMNS;
+  return {
+    descStart: (items.x + desc.x) / 2,
+    catStart: (desc.x + cat.x) / 2,
+    moneyStart: (cat.x + money.x) / 2,
+  };
+}
+
+const ROW_NUMBER = /^(\d{1,3})(?:\s+(.*))?$/;
+
+function isNumberedRow(line: TextLine): boolean {
+  const first = line.segments.find((s) => s.text.trim());
+  if (!first || first.x >= 45) return false;
+  const m = first.text.trim().match(ROW_NUMBER);
+  // "1" alone, or "12 HIGH Paint …"; but never a bare number with nothing else on the line
+  return !!m && (line.segments.length > 1 || !!m[2]);
+}
+
+function hasMoney(line: TextLine): boolean {
+  return line.segments.some((s) => /\$\d/.test(s.text));
+}
+
+function isTotalRow(line: TextLine): boolean {
+  return /^Total\b/i.test(line.fullText.trim()) && hasMoney(line);
+}
+
+/** Lines of the Budget Line Items table: the title page plus any continuation pages up to the Total row. */
+function collectLineItemLines(lines: TextLine[], headerIdx: number): TextLine[] {
+  const header = lines[headerIdx];
+  const out: TextLine[] = [];
+  const maxPage = Math.max(...lines.map((l) => l.page));
+  for (let page = header.page; page <= maxPage; page++) {
+    const pageLines = lines.filter((l) => l.page === page && !isHeaderOrFooter(l) && (page !== header.page || l.y > header.y));
+    if (page !== header.page) {
+      // A continuation page has no title; stop at the first page that is not table rows.
+      const looksLikeTable = pageLines.some((l) => (isNumberedRow(l) && hasMoney(l)) || isTotalRow(l));
+      if (!looksLikeTable) break;
     }
+    out.push(...pageLines);
+    if (pageLines.some(isTotalRow)) break;
   }
-  return values;
+  return out;
 }
 
 function parseBudgetLineItems(lines: TextLine[]): BudgetLineItems {
   const headerIdx = lines.findIndex((l) => /^Budget Line Items$/i.test(l.fullText.trim()));
-  const headerPage = headerIdx >= 0 ? lines[headerIdx].page : -1;
-
-  const body = headerIdx >= 0
-    ? lines.filter((l) => l.page === headerPage && !isHeaderOrFooter(l) && l.y > lines[headerIdx].y)
-    : [];
 
   const bb: Record<string, BoundingBox> = {};
-  if (headerIdx >= 0) {
-    const hl = lines[headerIdx];
-    bb.title = toBBox(hl.segments[0], hl);
+  if (headerIdx < 0) {
+    return { categories: [], totalHR: null, totalDM: null, totalUP: null, totalRC: null, totalSoft: null, grandTotal: null, boundingBoxes: bb };
   }
+  const hl = lines[headerIdx];
+  bb.title = toBBox(hl.segments[0], hl);
+
+  const body = collectLineItemLines(lines, headerIdx);
+  const columnHeader = body.find((l) => /^Budget Items\b/i.test(l.fullText.trim()));
+  const cols = detectLineItemColumns(columnHeader);
+
+  // Anchors: numbered item rows, category rows (money, no number) and the Total row.
+  const rows = clusterRows(
+    body.filter((l) => l !== columnHeader),
+    (l) => isNumberedRow(l) || hasMoney(l),
+  );
 
   const categories: BudgetCategory[] = [];
   let currentCategory: BudgetCategory | null = null;
@@ -1211,92 +1501,102 @@ function parseBudgetLineItems(lines: TextLine[]): BudgetLineItems {
   let totalSoft: number | null = null;
   let grandTotal: number | null = null;
 
-  for (const line of body) {
-    const text = line.fullText.trim();
+  for (const { anchor, segs } of rows) {
+    const ordered = sortReading(segs);
 
-    // Skip the column header row
-    if (/^Budget Items\b/i.test(text)) continue;
+    // Split the row into columns. Money tokens are taken from the money
+    // columns and from the Categories column (a run like "Exterior Doors
+    // $10,000" happens when the cells touch); text columns keep the rest.
+    const nameSegs: Seg[] = [];
+    const descSegs: Seg[] = [];
+    const catSegs: Seg[] = [];
+    const money: { value: number; seg: Seg }[] = [];
+    let numberSeg: Seg | null = null;
+    let num: number | null = null;
 
-    // Check if this is a Total row
-    if (/^Total\b/.test(text) && line.segments.some((s) => /\$/.test(s.text))) {
-      const vals = parseDollarValues(line.segments);
-      [totalHR, totalDM, totalUP, totalRC, totalSoft, grandTotal] =
-        vals.map((v) => v ?? null);
-      const totalSeg = line.segments.find((s) => /Total/.test(s.text));
-      if (totalSeg) bb.total = toBBox(totalSeg, line);
-      const lastSeg = line.segments[line.segments.length - 1];
-      if (lastSeg) bb.grandTotal = toBBox(lastSeg, line);
+    for (const seg of ordered) {
+      if (!numberSeg && seg.x < 45) {
+        const m = seg.text.match(ROW_NUMBER);
+        if (m) {
+          numberSeg = seg;
+          num = parseInt(m[1], 10);
+          if (m[2]) nameSegs.push({ ...seg, text: m[2] });
+          continue;
+        }
+      }
+      if (seg.x >= cols.moneyStart) {
+        for (const t of seg.text.split(/\s+/)) {
+          const v = parseSignedCurrency(t);
+          if (v !== null) money.push({ value: v, seg });
+        }
+      } else if (seg.x >= cols.catStart) {
+        const words: string[] = [];
+        for (const t of seg.text.split(/\s+/)) {
+          const v = MONEY_TOKEN.test(t) ? parseSignedCurrency(t) : null;
+          if (v !== null) money.push({ value: v, seg });
+          else words.push(t);
+        }
+        if (words.length) catSegs.push({ ...seg, text: words.join(" ") });
+      } else if (seg.x >= cols.descStart) {
+        descSegs.push(seg);
+      } else {
+        nameSegs.push(seg);
+      }
+    }
+
+    const values = money.map((m) => m.value);
+    const [hr = null, dm = null, up = null, rc = null, soft = null, total = null] = values;
+    const lastMoney = money[money.length - 1];
+
+    if (isTotalRow(anchor)) {
+      [totalHR, totalDM, totalUP, totalRC, totalSoft, grandTotal] = [hr, dm, up, rc, soft, total];
+      const totalSeg = ordered.find((s) => /^Total\b/i.test(s.text));
+      if (totalSeg) bb.total = toBBox(totalSeg, anchor);
+      if (lastMoney) bb.grandTotal = toBBox(lastMoney.seg, anchor);
       continue;
     }
 
-    // Check if this is a numbered item row.
-    // Case 1: first segment is just a number (e.g., "1" at x~32)
-    // Case 2: number and name merged (e.g., "1 Dumpster / Debris Removal" at x~31)
-    const firstSeg = line.segments[0];
-    const separateNum = firstSeg && firstSeg.x < 50 && /^\d+$/.test(firstSeg.text.trim());
-    const mergedNum = firstSeg && firstSeg.x < 50 && /^\d+\s+\S/.test(firstSeg.text.trim());
-    const isItemRow = separateNum || mergedNum;
-
-    if (isItemRow) {
-      const itemBB: Record<string, BoundingBox> = {};
-      let num: number;
-      let name: string;
-
-      if (separateNum) {
-        num = parseInt(firstSeg.text.trim(), 10);
-        itemBB.number = toBBox(firstSeg, line);
-        const nameSeg = line.segments.find((s) => s.x >= 55 && s.x < 200);
-        name = nameSeg?.text.trim() ?? "";
-        if (nameSeg) itemBB.name = toBBox(nameSeg, line);
-      } else {
-        // Number and name merged in one segment
-        const match = firstSeg.text.trim().match(/^(\d+)\s+(.+)$/);
-        num = parseInt(match![1], 10);
-        name = match![2].trim();
-        itemBB.number = toBBox(firstSeg, line);
-        itemBB.name = toBBox(firstSeg, line);
+    if (num !== null) {
+      let name = joinColumn(nameSegs);
+      let flag: string | null = null;
+      // A leading badge is the report's verdict on the line; lines it accepts
+      // carry a green check icon instead, which has no text.
+      const badge = name.match(LEADING_BADGE);
+      if (badge) {
+        flag = badge[1].toUpperCase();
+        name = name.slice(badge[0].length).trim();
       }
 
-      // Description segment at x~258
-      const descSeg = line.segments.find((s) => s.x >= 200 && s.x < 370);
-      const description = descSeg?.text.trim() ?? "";
-      if (descSeg) itemBB.description = toBBox(descSeg, line);
-
-      const vals = parseDollarValues(line.segments);
-      const [hr = null, dm = null, up = null, rc = null, soft = null, total = null] =
-        vals.map((v) => v ?? null);
-
-      // Bounding box for total (last segment)
-      const lastSeg = line.segments[line.segments.length - 1];
-      if (lastSeg && /\$/.test(lastSeg.text)) itemBB.total = toBBox(lastSeg, line);
+      const itemBB: Record<string, BoundingBox> = {};
+      if (numberSeg) itemBB.number = toBBox(numberSeg, anchor);
+      if (nameSegs[0]) itemBB.name = toBBox(nameSegs[0], anchor);
+      if (descSegs[0]) itemBB.description = toBBox(descSegs[0], anchor);
+      if (catSegs[0]) itemBB.category = toBBox(catSegs[0], anchor);
+      if (lastMoney) itemBB.total = toBBox(lastMoney.seg, anchor);
 
       const item: BudgetLineItem = {
         number: num,
         name,
-        description,
+        description: joinColumn(descSegs),
+        category: joinColumn(catSegs),
+        flag,
         hr, dm, up, rc, soft, total,
         boundingBoxes: itemBB,
       };
-
-      if (currentCategory) {
-        currentCategory.items.push(item);
+      if (!currentCategory) {
+        currentCategory = { name: "", hr: null, dm: null, up: null, rc: null, soft: null, total: null, items: [], boundingBoxes: {} };
+        categories.push(currentCategory);
       }
-    } else if (line.segments.some((s) => /\$/.test(s.text))) {
+      currentCategory.items.push(item);
+    } else if (values.length > 0) {
       // Category row: has dollar values but no leading number
       const catBB: Record<string, BoundingBox> = {};
-      const catNameSeg = line.segments.find((s) => s.x < 200);
-      const catName = catNameSeg?.text.trim() ?? "";
-      if (catNameSeg) catBB.name = toBBox(catNameSeg, line);
-
-      const vals = parseDollarValues(line.segments);
-      const [hr = null, dm = null, up = null, rc = null, soft = null, total = null] =
-        vals.map((v) => v ?? null);
-
-      const lastSeg = line.segments[line.segments.length - 1];
-      if (lastSeg && /\$/.test(lastSeg.text)) catBB.total = toBBox(lastSeg, line);
+      const nameSeg = nameSegs[0] ?? descSegs[0];
+      if (nameSeg) catBB.name = toBBox(nameSeg, anchor);
+      if (lastMoney) catBB.total = toBBox(lastMoney.seg, anchor);
 
       currentCategory = {
-        name: catName,
+        name: joinColumn([...nameSegs, ...descSegs]),
         hr, dm, up, rc, soft, total,
         items: [],
         boundingBoxes: catBB,

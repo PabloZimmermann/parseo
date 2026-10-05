@@ -423,7 +423,9 @@ export function parseReconciliationSection(lines: TextLine[]): ReconciliationSec
     appraisalBasis = parts.join(" ").trim();
   }
 
-  // Final value and effective date
+  // Final value and effective date. Whether this figure is an "as is" or a
+  // subject-to (as-completed) value is conveyed by appraisalBasisType, which
+  // parser.ts resolves from the basis checkbox.
   const valueLine = findLine(lines, /^\$\s*[\d,]+\s*,\s*as of/i);
   let finalValue: number | null = null, effectiveDate = "";
   if (valueLine) {
@@ -439,7 +441,7 @@ export function parseReconciliationSection(lines: TextLine[]): ReconciliationSec
     }
   }
 
-  return { indicatedValueBySalesComparison, indicatedValueByCostApproach, indicatedValueByIncomeApproach, reconciliationComments, appraisalBasis, finalValue, effectiveDate, boundingBoxes: bb };
+  return { indicatedValueBySalesComparison, indicatedValueByCostApproach, indicatedValueByIncomeApproach, reconciliationComments, appraisalBasis, appraisalBasisType: "", finalValue, effectiveDate, boundingBoxes: bb };
 }
 
 // ── Cost Approach (Page 3) ────────────────────────────────────────────────

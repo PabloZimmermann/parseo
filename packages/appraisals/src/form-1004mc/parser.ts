@@ -86,6 +86,33 @@ export async function parseForm1004MCFromLines(
     return value;
   }
 
+  // ── Reconciliation basis ──
+  // The basis checkbox tells you whether finalValue is an "as is" value or a
+  // subject-to (as-completed/ARV) value. The four options span two wrapped
+  // lines and the form's x-origin shifts between documents, so derive each
+  // option's x from its own text segment instead of hardcoding positions.
+  const checkedPage2 = await extractCheckedBoxes(buffer, 2 + pageOffset);
+  const basisStart = page2.findIndex((l) => /This appraisal is made/i.test(l.fullText));
+  if (basisStart >= 0) {
+    const basisBlock = page2.slice(basisStart, basisStart + 4);
+    const basisOptions = [
+      { type: "as is", re: /^"?\s*as is\b/i },
+      { type: "subject to completion", re: /^subject to completion/i },
+      { type: "subject to repairs", re: /^subject to the following repairs/i },
+      { type: "subject to inspection", re: /^subject to the$/i },
+    ] as const;
+    for (const opt of basisOptions) {
+      const match = basisBlock
+        .map((line) => ({ line, seg: line.segments.find((s) => opt.re.test(s.text.trim())) }))
+        .find((m) => m.seg);
+      if (match?.seg && resolveCheckbox(checkedPage2, match.line.y, [{ x: match.seg.x, label: opt.type }])) {
+        reconciliation.appraisalBasisType = opt.type;
+        reconciliation.boundingBoxes.appraisalBasisType = toBBox(match.seg, match.line);
+        break;
+      }
+    }
+  }
+
   const locLine = page1.find((l) => /^Location\b/.test(l.fullText));
   const builtLine = page1.find((l) => /^Built-Up\b/.test(l.fullText));
   const growthLine2 = page1.find((l) => /^Growth\b/.test(l.fullText));
@@ -158,6 +185,7 @@ export async function parseForm1004MCFromLines(
   }
 
   return {
+    appraisalType: "1004",
     subject,
     contract,
     neighborhood,

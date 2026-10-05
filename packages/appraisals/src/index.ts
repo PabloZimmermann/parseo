@@ -1,12 +1,16 @@
 import { parseRicherValuesReport } from "./richer-values/index.js";
 import { parseForm1004MC } from "./form-1004mc/index.js";
 import { parseForm1073 } from "./form-1073/index.js";
+import { parseForm1025 } from "./form-1025/index.js";
 export const richerValues = parseRicherValuesReport;
 export const form1004MC = parseForm1004MC;
 export const form1073 = parseForm1073;
+export const form1025 = parseForm1025;
 export { parseRicherValuesReportFromLines } from "./richer-values/index.js";
 export { parseForm1004MCFromLines } from "./form-1004mc/index.js";
 export { parseForm1073FromLines } from "./form-1073/index.js";
+export { parseForm1025FromLines } from "./form-1025/index.js";
 export type { RicherValuesReport } from "./richer-values/index.js";
 export type { Form1004MCReport } from "./form-1004mc/index.js";
 export type { Form1073Report } from "./form-1073/index.js";
+export type { Form1025Report } from "./form-1025/index.js";

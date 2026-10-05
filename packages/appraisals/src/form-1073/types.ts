@@ -326,6 +326,7 @@ export interface LenderClientInfo {
 // ── Full Report ─────────────────────────────────────────────────────────
 
 export interface Form1073Report {
+  appraisalType: "1073";
   subject: SubjectSection;
   contract: ContractSection;
   neighborhood: NeighborhoodSection;

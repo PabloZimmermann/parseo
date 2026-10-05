@@ -46,7 +46,9 @@ export async function extractCheckedBoxes(
   buffer: Buffer,
   pageNum: number,
 ): Promise<CheckedPosition[]> {
-  const uint8 = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  // Copy the bytes — pdf.js detaches the ArrayBuffer it's handed, which would
+  // break any later call that reuses the caller's buffer (e.g. a second page).
+  const uint8 = new Uint8Array(buffer);
   const pdf = await getDocument({ data: uint8, useSystemFonts: true }).promise;
   const page = await pdf.getPage(pageNum);
   const viewport = page.getViewport({ scale: 1 });

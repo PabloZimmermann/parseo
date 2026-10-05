@@ -55,10 +55,17 @@ const MONTHS: Record<string, string> = {
   January: "01", February: "02", March: "03", April: "04",
   May: "05", June: "06", July: "07", August: "08",
   September: "09", October: "10", November: "11", December: "12",
+  // Spanish
+  Enero: "01", Febrero: "02", Marzo: "03", Abril: "04",
+  Mayo: "05", Junio: "06", Julio: "07", Agosto: "08",
+  Septiembre: "09", Octubre: "10", Noviembre: "11", Diciembre: "12",
 };
 
+// Alternation of every month name (English + Spanish) for use inside patterns.
+const MONTH_NAMES = Object.keys(MONTHS).join("|");
+
 function fullDateToISO(raw: string): DateString {
-  const m = raw.trim().match(/^(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),?\s+(\d{4})$/);
+  const m = raw.trim().match(new RegExp(`^(${MONTH_NAMES})\\s+(\\d{1,2}),?\\s+(\\d{4})$`));
   if (!m) return null;
   return `${m[3]}-${MONTHS[m[1]]}-${m[2].padStart(2, "0")}`;
 }
@@ -75,9 +82,10 @@ function shortDateToISO(shortDate: string, year: string): DateString {
 
 function parseStatementPeriod(lines: TextLine[]): { statementPeriod: { from: DateString; to: DateString }; bbox: BoundingBox | null } {
   for (const line of lines.slice(0, 10)) {
-    // "January 01, 2026 through January 30, 2026"
+    // EN: "January 01, 2026 through January 30, 2026"
+    // ES: "Abril 01, 2026 a Abril 30, 2026"
     const m = line.fullText.match(
-      /(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),?\s+(\d{4})\s+through\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),?\s+(\d{4})/
+      new RegExp(`(${MONTH_NAMES})\\s+(\\d{1,2}),?\\s+(\\d{4})\\s+(?:through|a)\\s+(${MONTH_NAMES})\\s+(\\d{1,2}),?\\s+(\\d{4})`)
     );
     if (m) {
       const from = `${m[3]}-${MONTHS[m[1]]}-${m[2].padStart(2, "0")}`;
@@ -120,7 +128,7 @@ function parseAccountHolder(lines: TextLine[]): AccountHolder {
 
     if (!text) continue;
     // Skip non-address content
-    if (/JPMorgan|P\s*O\s*Box|Columbus|DUPLICATE|CUSTOMER|Web site|Service Center|Para Espanol|International|relay|Chase\.com|^\d{5,}.*DRE|STATEMENT OF ACCOUNT|^SM$|^®$/i.test(text)) continue;
+    if (/JPMorgan|P\s*O\s*Box|Columbus|Indianapolis|DUPLICATE|CUSTOMER|Web site|Service Center|Para Espa[nñ]ol|International|relay|Chase\.com|^\d{5,}.*DRE|STATEMENT OF ACCOUNT|N[úu]mero De Cuenta|INFORMACI[ÓO]N|Sitio Web|Centro de atenci[óo]n|Llamadas internacionales|Aceptamos llamadas|^SM$|^®$/i.test(text)) continue;
 
     if (!name) {
       name = text;
@@ -138,7 +146,7 @@ function parseAccountHolder(lines: TextLine[]): AccountHolder {
 
 function parseAccountNumber(lines: TextLine[]): { accountNumber: string; bbox: BoundingBox | null } {
   for (const line of lines.slice(0, 15)) {
-    const m = line.fullText.match(/Account\s*Number:\s*(\d+)/);
+    const m = line.fullText.match(/(?:Account\s*Number|N[úu]mero\s*De\s*Cuenta):\s*(\d+)/i);
     if (m) {
       const seg = line.segments.find((s) => s.text.includes(m[1]));
       return { accountNumber: m[1], bbox: seg ? toBBox(seg, line) : null };
@@ -165,30 +173,31 @@ function parseSummary(lines: TextLine[]): CheckingSummary {
     if (line.page > 1) break;
     const text = line.fullText;
 
-    if (/^CHECKING SUMMARY/i.test(text)) { inSummary = true; continue; }
+    if (/^CHECKING SUMMARY/i.test(text) || /^RESUMEN DE CUENTA DE CHEQUES/i.test(text)) { inSummary = true; continue; }
     if (!inSummary) continue;
     // Break at the actual section header (no numbers after it) or post-summary text
-    if (/^DEPOSITS AND ADDITIONS\s*$/i.test(text) || /^Your Monthly Service Fee/i.test(text)) break;
+    if (/^DEPOSITS AND ADDITIONS\s*$/i.test(text) || /^DEP[ÓO]SITOS Y ADICIONES\s*$/i.test(text)
+      || /^Your Monthly Service Fee/i.test(text) || /^Su cargo mensual por servicio/i.test(text)) break;
 
-    if (/^Beginning Balance/i.test(text)) {
+    if (/^Beginning Balance/i.test(text) || /^Saldo inicial/i.test(text)) {
       const amtSeg = line.segments.find((s) => /\$[\d,]+/.test(s.text));
       beginningBalance = amtSeg ? parseCurrency(amtSeg.text) ?? 0 : 0;
       if (amtSeg) bb.beginningBalance = toBBox(amtSeg, line);
-    } else if (/^Ending Balance/i.test(text)) {
+    } else if (/^Ending Balance/i.test(text) || /^Saldo final/i.test(text)) {
       // Last numeric segment is the balance (skip the instances count)
       const numSegs = line.segments.filter((s, idx) => idx > 0 && parseCurrency(s.text) !== null);
       const amtSeg = numSegs[numSegs.length - 1];
       endingBalance = amtSeg ? parseCurrency(amtSeg.text) ?? 0 : 0;
       if (amtSeg) bb.endingBalance = toBBox(amtSeg, line);
-    } else if (/^Deposits and Additions/i.test(text)) {
+    } else if (/^Deposits and Additions/i.test(text) || /^Dep[óo]sitos y Adiciones/i.test(text)) {
       depositsAndAdditions = parseSummaryLine(line);
-    } else if (/^Checks Paid/i.test(text)) {
+    } else if (/^Checks Paid/i.test(text) || /^Cheques Pagados/i.test(text)) {
       checksPaid = parseSummaryLine(line);
-    } else if (/^ATM & Debit Card/i.test(text)) {
+    } else if (/^ATM & Debit Card/i.test(text) || /^Retiros de cajeros autom[áa]ticos/i.test(text)) {
       atmDebitCardWithdrawals = parseSummaryLine(line);
-    } else if (/^Electronic Withdrawals/i.test(text)) {
+    } else if (/^Electronic Withdrawals/i.test(text) || /^Retiros Electr[óo]nicos/i.test(text)) {
       electronicWithdrawals = parseSummaryLine(line);
-    } else if (/^Fees\b/i.test(text)) {
+    } else if (/^Fees\b/i.test(text) || /^Cargos\b/i.test(text)) {
       fees = parseSummaryLine(line);
     }
   }
@@ -227,10 +236,15 @@ function parseSummaryLine(line: TextLine): SummaryLine {
 // Section headers that define transaction categories
 const SECTION_HEADERS: { pattern: RegExp; category: string }[] = [
   { pattern: /^DEPOSITS AND ADDITIONS/i, category: "Deposits and Additions" },
+  { pattern: /^DEP[ÓO]SITOS Y ADICIONES/i, category: "Deposits and Additions" },
   { pattern: /^CHECKS PAID/i, category: "Checks Paid" },
+  { pattern: /^CHEQUES PAGADOS/i, category: "Checks Paid" },
   { pattern: /^ATM & DEBIT CARD WITHDRAWALS/i, category: "ATM & Debit Card Withdrawals" },
+  { pattern: /^RETIROS DE CAJEROS AUTOM[ÁA]TICOS Y COMPRAS/i, category: "ATM & Debit Card Withdrawals" },
   { pattern: /^ELECTRONIC WITHDRAWALS/i, category: "Electronic Withdrawals" },
+  { pattern: /^RETIROS ELECTR[ÓO]NICOS/i, category: "Electronic Withdrawals" },
   { pattern: /^FEES$/i, category: "Fees" },
+  { pattern: /^CARGOS$/i, category: "Fees" },
 ];
 
 const AMOUNT_MIN_X = 480;
@@ -253,24 +267,25 @@ function parseTransactions(lines: TextLine[], year: string): Transaction[] {
     }
 
     // Stop at daily ending balance or disclosures
-    if (/^DAILY ENDING BALANCE/i.test(text)) break;
-    if (/^IN CASE OF ERRORS/i.test(text)) break;
-    if (/^ATM & DEBIT CARD SUMMARY/i.test(text)) {
+    if (/^DAILY ENDING BALANCE/i.test(text) || /^SALDO FINAL DIARIO/i.test(text)) break;
+    if (/^IN CASE OF ERRORS/i.test(text) || /^EN CASO DE ERRORES/i.test(text)) break;
+    if (/^ATM & DEBIT CARD SUMMARY/i.test(text) || /^RESUMEN DE TARJETA DE CAJERO AUTOM[ÁA]TICO/i.test(text)) {
       if (current) { transactions.push(current); current = null; }
       currentCategory = "";
       continue;
     }
-    if (/^ATM & DEBIT CARD TOTALS/i.test(text)) continue;
+    if (/^ATM & DEBIT CARD TOTALS/i.test(text) || /^Totales de tarjeta de cajero autom[áa]tico/i.test(text)) continue;
 
     if (!currentCategory) continue;
 
     // Skip header lines, totals, page headers, disclaimers
     if (/^(DATE|CHECK NO\.|INSTANCES|AMOUNT|PAID)/i.test(text)) continue;
+    if (/^(FECHA|DESCRIPCI[ÓO]N|CANTIDAD|N[ÚU]MERO DE)/i.test(text)) continue;
     if (/^Total /i.test(text)) { if (current) { transactions.push(current); current = null; } continue; }
-    if (/^Page \d/i.test(text)) continue;
-    if (/^(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d.*through/i.test(text)) continue;
-    if (/^Account Number:/i.test(text)) continue;
-    if (/^\(continued\)/i.test(text)) continue;
+    if (/^Page \d/i.test(text) || /^P[áa]gina \d/i.test(text)) continue;
+    if (new RegExp(`^(${MONTH_NAMES})\\s+\\d.*(?:through|\\sa\\s)`, "i").test(text)) continue;
+    if (/^Account Number:/i.test(text) || /^N[úu]mero De Cuenta:/i.test(text)) continue;
+    if (/^\(continued\)/i.test(text) || /^\(continuaci[óo]n\)/i.test(text)) continue;
     if (/^If you see a description|^\^ An image/i.test(text)) continue;
     if (/^000\d+$/i.test(text)) continue;
     // Skip card holder summary lines
@@ -389,11 +404,11 @@ function parseDailyEndingBalances(lines: TextLine[], year: string): DailyBalance
   for (const line of lines) {
     const text = line.fullText;
 
-    if (/^DAILY ENDING BALANCE/i.test(text)) { inSection = true; continue; }
+    if (/^DAILY ENDING BALANCE/i.test(text) || /^SALDO FINAL DIARIO/i.test(text)) { inSection = true; continue; }
     if (!inSection) continue;
-    if (/^IN CASE OF ERRORS/i.test(text)) break;
-    if (/^(DATE|AMOUNT)$/i.test(text.trim())) continue;
-    if (/^Page \d/i.test(text)) continue;
+    if (/^IN CASE OF ERRORS/i.test(text) || /^EN CASO DE ERRORES/i.test(text)) break;
+    if (/^(DATE|AMOUNT|FECHA|CANTIDAD)$/i.test(text.trim())) continue;
+    if (/^Page \d/i.test(text) || /^P[áa]gina \d/i.test(text)) continue;
 
     // Daily balance lines have multiple date/amount pairs on one line
     // "01/02 $8,639.83 01/13 1,182.31 01/23 3,976.39"

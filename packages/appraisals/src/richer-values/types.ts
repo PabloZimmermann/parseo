@@ -196,15 +196,47 @@ export interface ComparablesSection {
 
 // ── Budget Flags (Page 18) ──────────────────────────────────────────────────
 
+/** One flagged row of a "Specific Line Item Concerns" table. */
+export interface BudgetFlagEntry {
+  /** Badge printed in the Flag column, upper-cased ("LOW", "HIGH", ...). */
+  flag: string | null;
+  item: string;
+  budget: number | null;
+  expected: number | null;
+  /** Budget − Expected ("+$7,000" → 7000, "-$500" → -500). */
+  diff: number | null;
+  notes: string;
+  boundingBoxes: Record<string, BoundingBox>;
+}
+
 export interface BudgetFlagSection {
   level: string;
+  /** Raw row texts, header row included (kept for backwards compatibility). */
   items: string[];
+  /** Structured rows; empty when the section says "No line items flagged." */
+  entries: BudgetFlagEntry[];
+  boundingBoxes: Record<string, BoundingBox>;
+}
+
+/** One row of the "Missing Line Items" table. */
+export interface MissingLineItem {
+  item: string;
+  low: number | null;
+  high: number | null;
+  expected: number | null;
+  perSqft: number | null;
+  /** Badge printed in the Flags column, upper-cased ("MISSING"). */
+  flag: string | null;
+  comments: string;
   boundingBoxes: Record<string, BoundingBox>;
 }
 
 export interface BudgetFlags {
   concerns: BudgetFlagSection[];
+  /** Raw joined text of the table (kept for backwards compatibility). */
   missingLineItems: string;
+  /** Structured rows; empty when the report says no items are missing. */
+  missingItems: MissingLineItem[];
   boundingBoxes: Record<string, BoundingBox>;
 }
 
@@ -212,8 +244,19 @@ export interface BudgetFlags {
 
 export interface BudgetLineItem {
   number: number;
+  /** Borrower's budget item name (Budget Items column), with any badge removed. */
   name: string;
+  /** Borrower's description of the work (Description column; often empty). */
   description: string;
+  /** RicherValues' own label for the work (Categories column, e.g. "Kitchen Cabinets"). */
+  category: string;
+  /**
+   * RicherValues' verdict on this line. The report prints a badge ("LOW",
+   * "HIGH", ...) before the name of lines it questions and a green check
+   * icon (no text) on lines it accepts. null therefore means "accepted".
+   * Severity and expected cost live in `BudgetFlags.concerns`.
+   */
+  flag: string | null;
   hr: number | null;
   dm: number | null;
   up: number | null;

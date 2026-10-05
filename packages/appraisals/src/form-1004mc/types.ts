@@ -234,6 +234,12 @@ export interface ReconciliationSection {
   indicatedValueByIncomeApproach: number | null;
   reconciliationComments: string;
   appraisalBasis: string;
+  /**
+   * Which basis checkbox is marked. Combine with finalValue to know the value
+   * type: "as is" → as-is value; "subject to completion"/"subject to repairs"
+   * → as-completed (ARV) value; "subject to inspection". "" when undetected.
+   */
+  appraisalBasisType: "as is" | "subject to completion" | "subject to repairs" | "subject to inspection" | "";
   finalValue: number | null;
   effectiveDate: string;
   boundingBoxes: Record<string, BoundingBox>;
@@ -335,6 +341,7 @@ export interface MarketConditionsAddendum {
 // ── Full Report ───────────────────────────────────────────────────────────
 
 export interface Form1004MCReport {
+  appraisalType: "1004";
   subject: SubjectSection;
   contract: ContractSection;
   neighborhood: NeighborhoodSection;

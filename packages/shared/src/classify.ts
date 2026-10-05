@@ -8,6 +8,7 @@ export type FormatName =
   | "richer-values"
   | "form-1004mc"
   | "form-1073"
+  | "form-1025"
   | "wells-fargo"
   | "td-bank"
   | "chase"
@@ -71,6 +72,7 @@ const profiles: FormatProfile[] = [
     exclude: [
       /Individual Condominium Unit Appraisal Report/i,
       /Form 1073/i,
+      /Small Residential Income Property Appraisal Report/i,
     ],
   },
 
@@ -95,6 +97,31 @@ const profiles: FormatProfile[] = [
       /Floor Location/i,
     ],
     exclude: [
+      /Uniform Residential Appraisal Report/i,
+      /Small Residential Income Property Appraisal Report/i,
+    ],
+  },
+
+  // ── Form 1025 (Small Residential Income Property) ────────
+  {
+    name: "form-1025",
+    primary: [
+      /Small Residential Income Property Appraisal Report/i,
+      /Fannie Mae Form 1025/i,
+      /Freddie Mac Form 72\b/i,
+      /Form 1025\b/i,
+    ],
+    supporting: [
+      /COMPARABLE RENTAL/i,
+      /Gross Rent Multiplier/i,
+      /2-4 Unit Housing/i,
+      /Unit Breakdown/i,
+      /Rent Schedule:/i,
+      /Total gross monthly rent/i,
+      /Indicated value by the Income Approach/i,
+    ],
+    exclude: [
+      /Individual Condominium Unit Appraisal Report/i,
       /Uniform Residential Appraisal Report/i,
     ],
   },
@@ -489,7 +516,7 @@ export type PackageName =
 const PACKAGE_FORMATS: Record<PackageName, FormatName[]> = {
   "credit-reports": ["credit-report"],
   "background-checks": ["smartlinx"],
-  "appraisals": ["richer-values", "form-1004mc", "form-1073"],
+  "appraisals": ["richer-values", "form-1004mc", "form-1073", "form-1025"],
   "bank-statements": [
     "wells-fargo",
     "td-bank",

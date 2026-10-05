@@ -101,6 +101,7 @@ export async function parseForm1073FromLines(lines: TextLine[], buffer?: Buffer,
   }
 
   return {
+    appraisalType: "1073",
     subject,
     contract,
     neighborhood,
